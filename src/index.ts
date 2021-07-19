@@ -54,7 +54,7 @@ export interface DeployerOptions extends GoogleAuthOptions {
   project?: string;
   targetDir?: string;
   sourceRepository?: string;
-  environmentVariables?: {
+  envVars?: {
     [key: string]: string;
   };
 }
@@ -194,7 +194,7 @@ export class Deployer extends GCXClient {
     const fields = opts.sourceRepository
       ? ['sourceRepository']
       : ['sourceUploadUrl'];
-    if (opts.environmentVariables) fields.push('environmentVariables');
+    if (opts.envVars) fields.push('environmentVariables');
     if (opts.memory) fields.push('availableMemoryMb');
     if (opts.description) fields.push('description');
     if (opts.entryPoint) fields.push('entryPoint');
@@ -254,7 +254,7 @@ export class Deployer extends GCXClient {
         availableMemoryMb: this._options.memory,
         maxInstances: this._options.maxInstances,
         vpcConnector: this._options.vpcConnector,
-        environmentVariables: this._options.environmentVariables,
+        environmentVariables: this._options.envVars,
       };
     }
 
@@ -270,7 +270,7 @@ export class Deployer extends GCXClient {
         availableMemoryMb: this._options.memory,
         maxInstances: this._options.maxInstances,
         vpcConnector: this._options.vpcConnector,
-        environmentVariables: this._options.environmentVariables,
+        environmentVariables: this._options.envVars,
       };
     }
 

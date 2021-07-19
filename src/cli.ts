@@ -7,10 +7,6 @@ import * as util from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const pkg = require('../../package.json');
-updateNotifier({pkg}).notify();
-
 const cli = meow(
   `
     Usage
@@ -48,6 +44,11 @@ const cli = meow(
       --target-dir
           The directory that contains the sources to be deployed.  Defaults
           to the current working directory.
+
+      --source-repository
+          The spource repository that contains the sources to be deployed. 
+          target-dir is used when not specified. 
+          target-dir is ignored when specified.  
 
       --retry
           If specified, then the function will be retried in case of a failure.
@@ -145,19 +146,49 @@ const cli = meow(
       triggerResource: {type: 'string'},
       triggerEvent: {type: 'string'},
       targetDir: {type: 'string'},
+      sourceRepository: {type: 'string'},
       region: {type: 'string'},
       maxInstances: {type: 'string'},
       vpcConnector: {type: 'string'},
+      envVars: {type: 'string'},
     },
   }
 );
+function processOptions(){
+  const data = {} as {
+    [key: string]: string;
+  };
+  if (cli.flags.envVars) {
+    cli.flags.envVars.split(',').forEach(item => {
+      const [key, value] = item.split('=');
+      data[key] = value;
+    });
+  }
+  const opts = {
+    ...(cli.flags as {} as DeployerOptions),
+    envVars: data,
+  } as DeployerOptions;
+
+  if (opts.sourceRepository) {
+    delete opts.targetDir;
+  }
+
+  return opts;
+}
 
 async function main() {
   if (cli.input.length !== 2) {
     cli.showHelp();
     return;
   }
+
+  const opts = processOptions();
+
   switch (cli.input[0]) {
+    case 'test': {
+      console.log('OPTS', opts);
+      break;
+    }
     case 'deploy': {
       const start = Date.now();
       const opts = cli.flags as {} as DeployerOptions;
@@ -201,7 +232,31 @@ async function main() {
       await deployinator.deploy();
       break;
     }
+    case 'undeploy': {
+      const start = Date.now();
+      const opts = cli.flags as {} as DeployerOptions;
+      const spinny = ora('Initializing deployment...').start();
+      const deployinator = new Deployer(opts);
+      deployinator
+        .on(ProgressEvent.STARTING, () => {
+          spinny.stopAndPersist({
+            symbol: '🤖',
+            text: 'Deployment initialized.',
+          });
+          spinny.start('Packaging sources...');
+        })
+        .on(ProgressEvent.COMPLETE, () => {
+          const seconds = (Date.now() - start) / 1000;
+          spinny.stopAndPersist({
+            symbol: '🚀',
+            text: `Function undeployed in ${seconds} seconds.`,
+          });
+        });
+      await deployinator.undeploy();
+      break;
+    }
     default:
+      console.log('In Default');
       cli.showHelp();
   }
 }
