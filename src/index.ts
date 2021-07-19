@@ -53,6 +53,10 @@ export interface DeployerOptions extends GoogleAuthOptions {
   entryPoint?: string;
   project?: string;
   targetDir?: string;
+  sourceRepository?: string;
+  environmentVariables?: {
+    [key: string]: string;
+  };
 }
 
 /**
@@ -94,11 +98,30 @@ export class Deployer extends GCXClient {
       options.projectId = options.project;
     }
     this._options = options;
-    if (!options.targetDir) {
+    if (!options.targetDir && !options.sourceRepository) {
       this._options.targetDir = process.cwd();
     }
     options.scopes = ['https://www.googleapis.com/auth/cloud-platform'];
     this._auth = new GoogleAuth(options);
+  }
+
+  /**
+   * Undeploy the current application using the given opts.
+   */
+  async undeploy() {
+    this.emit(ProgressEvent.STARTING, {});
+    const gcf = await this._getGCFClient();
+    const projectId = await this._auth.getProjectId();
+    const region = this._options.region || 'us-central1';
+    const parent = `projects/${projectId}/locations/${region}`;
+    const name = `${parent}/functions/${this._options.name}`;
+    const fns = gcf.projects.locations.functions;
+    const result: GaxiosResponse<cloudfunctions_v1.Schema$Operation> =
+      await fns.delete({name: name});
+
+    const operation = result.data;
+    await this._poll(operation.name!);
+    this.emit(ProgressEvent.COMPLETE);
   }
 
   /**
@@ -112,14 +135,23 @@ export class Deployer extends GCXClient {
     const parent = `projects/${projectId}/locations/${region}`;
     const name = `${parent}/functions/${this._options.name}`;
     const fns = gcf.projects.locations.functions;
-    const res = await fns.generateUploadUrl({parent});
-    const sourceUploadUrl = res.data.uploadUrl!;
-    this.emit(ProgressEvent.PACKAGING);
-    const zipPath = await this._pack();
-    this.emit(ProgressEvent.UPLOADING);
-    await this._upload(zipPath, sourceUploadUrl);
-    this.emit(ProgressEvent.DEPLOYING);
-    const body = this._buildRequest(parent, sourceUploadUrl);
+    let sourceUploadUrl = '';
+    let sourceRepository: cloudfunctions_v1.Schema$SourceRepository = {};
+    if (!this._options.sourceRepository) {
+      const res = await fns.generateUploadUrl({parent});
+      sourceUploadUrl = res.data.uploadUrl!;
+      this.emit(ProgressEvent.PACKAGING);
+      const zipPath = await this._pack();
+      this.emit(ProgressEvent.UPLOADING);
+      await this._upload(zipPath, sourceUploadUrl);
+      this.emit(ProgressEvent.DEPLOYING);
+    } else {
+      sourceRepository = {
+        url: this._options.sourceRepository,
+      };
+    }
+
+    const body = this._buildRequest(parent, sourceUploadUrl, sourceRepository);
     const exists = await this._exists(name);
     let result: GaxiosResponse<cloudfunctions_v1.Schema$Operation>;
     if (exists) {
@@ -158,8 +190,11 @@ export class Deployer extends GCXClient {
    * @private
    */
   _getUpdateMask() {
-    const fields = ['sourceUploadUrl'];
     const opts = this._options;
+    const fields = opts.sourceRepository
+      ? ['sourceRepository']
+      : ['sourceUploadUrl'];
+    if (opts.environmentVariables) fields.push('environmentVariables');
     if (opts.memory) fields.push('availableMemoryMb');
     if (opts.description) fields.push('description');
     if (opts.entryPoint) fields.push('entryPoint');
@@ -195,24 +230,65 @@ export class Deployer extends GCXClient {
   }
 
   /**
+   * Build a request body that can be used to create or patch the function
+   * @private
+   * @param parent Path to the cloud function resource container
+   * @param sourceUploadUrl Url where the blob was pushed
+   * @param sourceRepository Url where the source repository lives
+   */
+  _getRequestBody(
+    parent: string,
+    sourceUploadUrl?: string,
+    sourceRepository?: cloudfunctions_v1.Schema$SourceRepository
+  ) {
+    let requestBody: cloudfunctions_v1.Schema$CloudFunction = {};
+    if (sourceUploadUrl) {
+      requestBody = {
+        name: `${parent}/functions/${this._options.name}`,
+        description: this._options.description,
+        sourceUploadUrl,
+        entryPoint: this._options.entryPoint,
+        network: this._options.network,
+        runtime: this._options.runtime || 'nodejs14',
+        timeout: this._options.timeout,
+        availableMemoryMb: this._options.memory,
+        maxInstances: this._options.maxInstances,
+        vpcConnector: this._options.vpcConnector,
+        environmentVariables: this._options.environmentVariables,
+      };
+    }
+
+    if (sourceRepository) {
+      requestBody = {
+        name: `${parent}/functions/${this._options.name}`,
+        description: this._options.description,
+        sourceRepository,
+        entryPoint: this._options.entryPoint,
+        network: this._options.network,
+        runtime: this._options.runtime || 'nodejs14',
+        timeout: this._options.timeout,
+        availableMemoryMb: this._options.memory,
+        maxInstances: this._options.maxInstances,
+        vpcConnector: this._options.vpcConnector,
+        environmentVariables: this._options.environmentVariables,
+      };
+    }
+
+    return requestBody;
+  }
+  /**
    * Build a request schema that can be used to create or patch the function
    * @private
    * @param parent Path to the cloud function resource container
    * @param sourceUploadUrl Url where the blob was pushed
    */
-  _buildRequest(parent: string, sourceUploadUrl: string) {
-    const requestBody: cloudfunctions_v1.Schema$CloudFunction = {
-      name: `${parent}/functions/${this._options.name}`,
-      description: this._options.description,
-      sourceUploadUrl,
-      entryPoint: this._options.entryPoint,
-      network: this._options.network,
-      runtime: this._options.runtime || 'nodejs14',
-      timeout: this._options.timeout,
-      availableMemoryMb: this._options.memory,
-      maxInstances: this._options.maxInstances,
-      vpcConnector: this._options.vpcConnector,
-    };
+  _buildRequest(
+    parent: string,
+    sourceUploadUrl?: string,
+    sourceRepository?: cloudfunctions_v1.Schema$SourceRepository
+  ) {
+    const requestBody: cloudfunctions_v1.Schema$CloudFunction =
+      this._getRequestBody(parent, sourceUploadUrl, sourceRepository);
     if (this._options.triggerTopic) {
       requestBody.eventTrigger = {
         eventType:
